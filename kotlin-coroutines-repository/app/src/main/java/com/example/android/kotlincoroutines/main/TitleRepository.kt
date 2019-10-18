@@ -1,4 +1,4 @@
-/*
+    /*
  * Copyright 2018 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,15 +18,18 @@ package com.example.android.kotlincoroutines.main
 
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.Transformations
-import com.example.android.kotlincoroutines.main.TitleRepository.RefreshState.Success
-import com.example.android.kotlincoroutines.main.TitleRepository.RefreshState.Error
-import com.example.android.kotlincoroutines.main.TitleRepository.RefreshState.Loading
-import com.example.android.kotlincoroutines.util.BACKGROUND
-import com.example.android.kotlincoroutines.util.FakeNetworkError
-import com.example.android.kotlincoroutines.util.FakeNetworkSuccess
+//import com.example.android.kotlincoroutines.main.TitleRepository.RefreshState.Success
+//import com.example.android.kotlincoroutines.main.TitleRepository.RefreshState.Error
+//import com.example.android.kotlincoroutines.main.TitleRepository.RefreshState.Loading
+import com.example.android.kotlincoroutines.util.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.LazyThreadSafetyMode.NONE
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
 
-/**
+    /**
  * TitleRepository provides an interface to fetch a title or request a new one be generated.
  *
  * Repository modules handle data operations. They provide a clean API so that the rest of the app
@@ -36,79 +39,68 @@ import kotlin.LazyThreadSafetyMode.NONE
  */
 class TitleRepository(private val network: MainNetwork, private val titleDao: TitleDao) {
 
-    /**
-     * [LiveData] to load title.
-     *
-     * This is the main interface for loading a title. The title will be loaded from the offline
-     * cache.
-     *
-     * Observing this will not cause the title to be refreshed, use [TitleRepository.refreshTitle]
-     * to refresh the title.
-     *
-     * Because this is defined as `by lazy` it won't be instantiated until the property is
-     * used for the first time.
-     */
-    val title: LiveData<String> by lazy<LiveData<String>>(NONE) {
-        Transformations.map(titleDao.loadTitle()) { it?.title }
-    }
+        /**
+         * [LiveData] to load title.
+         *
+         * This is the main interface for loading a title. The title will be loaded from the offline
+         * cache.
+         *
+         * Observing this will not cause the title to be refreshed, use [TitleRepository.refreshTitle]
+         * to refresh the title.
+         *
+         * Because this is defined as `by lazy` it won't be instantiated until the property is
+         * used for the first time.
+         */
+        val title: LiveData<String> by lazy<LiveData<String>>(NONE) {
+            Transformations.map(titleDao.loadTitle()) { it?.title }
+        }
 
-    /**
-     * Refresh the current title and save the results to the offline cache.
-     *
-     * This method does not return the new title. Use [TitleRepository.title] to observe
-     * the current tile.
-     *
-     * @param onStateChanged callback called when state changes to Loading, Success, or Error
-     */
-    // TODO: Reimplement with coroutines and remove state listener
-    fun refreshTitle(onStateChanged: TitleStateListener) {
-        onStateChanged(Loading)
-        val call = network.fetchNewWelcome()
-        call.addOnResultListener { result ->
-            when (result) {
-                is FakeNetworkSuccess<String> -> {
-                    BACKGROUND.submit {
-                        // run insertTitle on a background thread
-                        titleDao.insertTitle(Title(result.data))
-                    }
-                    onStateChanged(Success)
-                }
-                is FakeNetworkError -> {
-                    onStateChanged(Error(TitleRefreshError(result.error)))
+        /**
+         * Refresh the current title and save the results to the offline cache.
+         *
+         * This method does not return the new title. Use [TitleRepository.title] to observe
+         * the current tile.
+         *
+         * @param onStateChanged callback called when state changes to Loading, Success, or Error
+         */
+
+        suspend fun refreshTitle() {
+            withContext(Dispatchers.IO) {
+                try {
+                    val result = network.fetchNewWelcome().await()
+                    titleDao.insertTitle(Title(result))
+                } catch (error: FakeNetworkException) {
+                    throw TitleRefreshError(error)
                 }
             }
         }
+        // delete class RefreshState and typealias TitleStateListener
+        // TODO: Reimplement with coroutines and remove state listener
+//    fun refreshTitle(onStateChanged: TitleStateListener) {
+//        onStateChanged(Loading)
+//        val call = network.fetchNewWelcome()
+//        call.addOnResultListener { result ->
+//            when (result) {
+//                is FakeNetworkSuccess<String> -> {
+//                    BACKGROUND.submit {
+//                        // run insertTitle on a background thread
+//                        titleDao.insertTitle(Title(result.data))
+//                    }
+//                    onStateChanged(Success)
+//                }
+//                is FakeNetworkError -> {
+//                    onStateChanged(Error(TitleRefreshError(result.error)))
+//                }
+//            }
+//        }
+//    }
     }
-
     /**
      * Class that represents the state of a refresh request.
      *
      * Sealed classes can only be extended from inside this file.
      */
     // TODO: Remove this class after rewriting refreshTitle
-    sealed class RefreshState {
-        /**
-         * The request is currently loading.
-         *
-         * An object is a singleton that cannot have more than one instance.
-         */
-        object Loading : RefreshState()
-
-        /**
-         * The request has completed successfully.
-         *
-         * An object is a singleton that cannot have more than one instance.
-         */
-        object Success : RefreshState()
-
-        /**
-         * The request has completed with an error
-         *
-         * @param error error message ready to be displayed to user
-         */
-        class Error(val error: Throwable) : RefreshState()
-    }
-}
 
 /**
  * Listener for [RefreshState] changes.
@@ -116,7 +108,6 @@ class TitleRepository(private val network: MainNetwork, private val titleDao: Ti
  * A typealias introduces a shorthand way to say a complex type. It does not create a new type.
  */
 // TODO: Remove this typealias after rewriting refreshTitle
-typealias TitleStateListener = (TitleRepository.RefreshState) -> Unit
 
 /**
  * Thrown when there was a error fetching a new title
@@ -132,4 +123,14 @@ class TitleRefreshError(cause: Throwable) : Throwable(cause.message, cause)
  * @return network result after completion
  * @throws Throwable original exception from library if network request fails
  */
+suspend fun <T> FakeNetworkCall<T>.await(): T {
+    return suspendCoroutine { continuation ->
+        addOnResultListener { result ->
+            when (result) {
+                is FakeNetworkSuccess<T> -> continuation.resume(result.data)
+                is FakeNetworkError -> continuation.resumeWithException(result.error)
+            }
+        }
+    }
+}
 // TODO: Implement FakeNetworkCall<T>.await() here
